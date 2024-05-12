@@ -140,10 +140,24 @@ class Conn
     public function delete(
         int $id
     ): void {
-        $response = self::request("DELETE FROM `" . self::table_name . "` WHERE id=? OR (parent_id=id AND id=?)");
-        $response->bind_param('ii', $id, $id);
-        $response->execute();
-        $response->close();
+        $row = self::query("SELECT * FROM `" . self::table_name . "` WHERE id=" . $id);
+        // перевіряємо чи це корінь, якщо так тоді очищаємо всю таблицю
+        if ($row->fetch_assoc()['parent_id'] == 0) {
+            self::query("TRUNCATE TABLE `" . self::table_name . "`");
+        }
+        // якщо не корінь - робимо вибірку та видаляємо тільки потрібні дані
+        else {
+            self::query('WITH RECURSIVE tree (id, parent_id) AS (
+                SELECT id, parent_id
+                FROM ' . self::table_name . '
+                WHERE id=' . $id . '
+                UNION ALL
+                SELECT t.id, t.parent_id
+                FROM ' . self::table_name . ' t
+                JOIN tree d ON t.parent_id = d.id
+            )
+            DELETE FROM branch WHERE id IN (SELECT id FROM tree);');
+        }
     }
 
     /**
@@ -208,15 +222,21 @@ new Conn;
             margin-bottom: 0.25rem;
         }
 
+        li>ul {
+            display: none;
+        }
+
         li>div {
             display: flex;
             flex-direction: row;
-            justify-content: space-between;
-            width: 10rem;
+            gap: 1rem;
             height: 2rem
         }
 
+        li>div>i,
         li>div>span {
+            display: flex;
+            align-self: center;
             cursor: pointer;
         }
 
@@ -325,7 +345,7 @@ new Conn;
         }
 
         function btnRoot(message = 'Create root') {
-            app.empty().append('<span class="btn btn-primary">' + message + '</span>');
+            app.empty().append('<span class="btn btn-primary" onclick="createRoot()">' + message + '</span>');
         }
 
         function request(
@@ -343,7 +363,7 @@ new Conn;
                 })
                 .then(response => response.json())
                 .then(data => {
-                    if (data) {
+                    if (data.length > 0) {
                         app
                             .empty()
                             .append(
@@ -353,11 +373,10 @@ new Conn;
                                     )
                                 )
                             );
-
-                        this.closeModal();
                     } else {
                         this.btnRoot()
                     }
+                    this.closeModal();
                 });
         }
 
@@ -415,17 +434,18 @@ new Conn;
                     li.push(
                         '<li>' +
                         '<div>' +
+                        (row.children.length ? '<i class="fa-solid fa-angle-right" onclick="toggleChildren(this)"></i>' : '') +
                         '<span onclick="update(' + row.id + ', \'' + row.title + '\')">' + row.title + '</span>' +
                         '<div class="btn-group" role="group">' +
                         '<span class="btn btn-outline-secondary btn-sm" onclick="add(' + row.id + ')"><i class="fa-solid fa-plus"></i></span>' +
                         '<span class="btn btn-outline-secondary btn-sm" onclick="remove(' + row.id + ')"><i class="fa-solid fa-minus"></i></span>' +
                         '</div>' +
                         '</div>' +
-                        (row.children ? this.template(row.children) : '') +
+                        (row.children.length ? this.template(row.children) : '') +
                         '</li>'
                     );
                 });
-            return '<ul>' + li.join('') + '</ul>';
+            return li.length ? '<ul>' + li.join('') + '</ul>' : '';
         }
 
         function openModal(modal_id, id) {
@@ -445,7 +465,14 @@ new Conn;
             modalItemId = 0;
         }
 
+        function createRoot() {
+            this.createRequest({
+                title: 'root'
+            })
+        }
+
         function add(id) {
+            this.modalItemUpdate = false;
             modalAdd.find('.btn-primary').text('Add item');
             this.openModal(modalAdd, id);
         }
@@ -484,6 +511,17 @@ new Conn;
                     this.closeModal();
                 }
             }, 1000);
+        }
+
+        function toggleChildren(el) {
+            $(el).closest('li').children('ul').toggle()
+            if ($(el).hasClass('fa-angle-right')) {
+                $(el).removeClass('fa-angle-right')
+                $(el).addClass('fa-angle-down');
+            } else {
+                $(el).removeClass('fa-angle-down')
+                $(el).addClass('fa-angle-right');
+            }
         }
     </script>
 </body>
