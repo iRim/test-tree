@@ -5,21 +5,59 @@ class Conn
     const server = 'localhost';
     const user = 'root';
     const pass = '';
-    const dbname = 'test';
+    const db_name = 'test';
     const table_name = 'branch';
 
     static private $conn = null;
 
+    /**
+     * Connect to MySQL
+     */
     public function __construct()
     {
         mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
-        self::$conn = new mysqli(self::server, self::user, self::pass, self::dbname);
+        self::$conn = new mysqli(self::server, self::user, self::pass);
         if (self::$conn->connect_error) {
-            self::error("Connection failed: " . self::$conn->connect_error);
+            self::error("Помилка зєднання: " . self::$conn->connect_error);
         }
+
+        self::createDB();
+        self::$conn->select_db(self::db_name);
         self::$conn->set_charset('utf8');
+        self::createTable();
     }
 
+    /**
+     * Створення БД, якщо не існує
+     *
+     * @return mysqli_result
+     */
+    static private function createDB(): mysqli_result|bool
+    {
+        return self::query('CREATE DATABASE IF NOT EXISTS ' . self::db_name);
+    }
+
+    /**
+     * Створення таблиці якщо не існує
+     *
+     * @return mysqli_result
+     */
+    static private function createTable(): mysqli_result|bool
+    {
+        $sql = "CREATE TABLE IF NOT EXISTS `" . self::table_name . "` (
+                id INT(6) UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                parent_id INT(6) DEFAULT 0,
+                title VARCHAR(50) NOT NULL
+            )";
+        return self::query($sql);
+    }
+
+    /**
+     * Помилки
+     *
+     * @param string $message
+     * @return void
+     */
     static private function error(
         string $message
     ): void {
@@ -27,26 +65,45 @@ class Conn
         die;
     }
 
+    /**
+     * Загальна функція для запитів в MySQL
+     *
+     * @param string $query
+     * @return mysqli_stmt
+     */
     static private function request(
         string $query
     ): mysqli_stmt {
         $response = self::$conn->prepare($query);
         if (!$response) {
-            self::error("SQL Error: <br>" . self::$conn->error);
+            self::error(self::$conn->error);
         }
         return $response;
     }
 
+    /**
+     * Запит в MySQL для отримання даних
+     *
+     * @param string $query
+     * @return mysqli_result
+     */
     static private function query(
         string $query
-    ): mysqli_result {
+    ): mysqli_result|bool {
         $response = self::$conn->query($query);
         if (!$response) {
-            self::error("SQL Error: <br>" . self::$conn->error);
+            self::error(self::$conn->error);
         }
         return $response;
     }
 
+    /**
+     * Додавання запису в БД
+     *
+     * @param string $title
+     * @param integer $parent_id
+     * @return void
+     */
     public function create(
         string $title,
         int $parent_id = 0
@@ -57,6 +114,13 @@ class Conn
         $response->close();
     }
 
+    /**
+     * Оновлення запису в БД
+     *
+     * @param integer $id
+     * @param string $title
+     * @return void
+     */
     public function update(
         int $id,
         string $title
@@ -67,6 +131,12 @@ class Conn
         $response->close();
     }
 
+    /**
+     * Видалення записів з БД
+     *
+     * @param integer $id
+     * @return void
+     */
     public function delete(
         int $id
     ): void {
@@ -76,57 +146,48 @@ class Conn
         $response->close();
     }
 
-    public function get(): mysqli_result
+    /**
+     * Отримання записів з БД
+     *
+     * @return array
+     */
+    public function get(): array
     {
-        return self::query("SELECT * FROM `" . self::table_name . "` ORDER BY id");
+        $items = [];
+        foreach (self::query("SELECT * FROM `" . self::table_name . "` ORDER BY parent_id, id") as $item) {
+            $items[] = $item;
+        }
+        return $items;
     }
 }
 
-foreach ((new Conn)->get() as $item) {
-    echo 'ID: ' . $item['id'] . '; TITLE: ' . $item['title'];
-    echo '<br>';
-}
-die;
-
-if (!empty($_GET['action']) and in_array($_GET['action'], ['create', 'read', 'update', 'delete'])) {
+if (!empty($_GET['response'])) {
     $conn = new Conn;
+    $post = json_decode(file_get_contents("php://input"), true);
 
-    echo json_encode(
-        [
-            'success' => match ($_GET['action']) {
-                'create' => function () use ($conn) {
-                    if (!empty($_POST['title'])) {
-                        $conn->create($_POST['title'], !empty($_POST['parent_id']) ? $_POST['parent_id'] : 0);
-                        return true;
-                    }
-                    return false;
-                },
-                'update' => function () use ($conn) {
-                    if (!empty($_POST['id']) and !empty($_POST['title'])) {
-                        $conn->update($_POST['id'], $_POST['title']);
-                        return true;
-                    }
-                    return false;
-                },
-                'delete' => function () use ($conn) {
-                    if (!empty($_POST['id'])) {
-                        $conn->delete($_POST['id']);
-                        return true;
-                    }
-                    return false;
-                },
-                default => true
-            },
+    if ($_GET['response'] == 'create') {
+        if (!empty($post['title'])) {
+            $conn->create($post['title'], !empty($post['parent_id']) ? $post['parent_id'] : 0);
+        }
+    }
+    if ($_GET['response'] == 'update') {
+        if (!empty($post['id']) and !empty($post['title'])) {
+            $conn->update($post['id'], $post['title']);
+        }
+    }
+    if ($_GET['response'] == 'delete') {
+        if (!empty($post['id'])) {
+            $conn->delete($post['id']);
+        }
+    }
 
-            'items' => $conn->get()
-        ]
-    );
+    echo json_encode($conn->get());
     die;
 }
 
+new Conn;
 
 ?>
-
 
 <!doctype html>
 <html lang="en" data-bs-theme="auto">
@@ -137,11 +198,52 @@ if (!empty($_GET['action']) and in_array($_GET['action'], ['create', 'read', 'up
     <meta name="description" content="">
     <meta name="author" content="Mark Otto, Jacob Thornton, and Bootstrap contributors">
     <meta name="generator" content="Hugo 0.122.0">
+    <link rel="icon" href="https://getbootstrap.com/docs/5.3/assets/img/favicons/favicon.ico">
     <title>Tree</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" integrity="sha512-SnH5WK+bZxgPHs44uWIX+LLJAJ9/2PkPKZ5QiAj6Ta86w+fsb2TkcmfRyVX3pBnMFcV7oQPJkl9QevSCWr3W6A==" crossorigin="anonymous" referrerpolicy="no-referrer" />
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
+    <style>
+        li {
+            margin-top: 0.25rem;
+            margin-bottom: 0.25rem;
+        }
+
+        li>div {
+            display: flex;
+            flex-direction: row;
+            justify-content: space-between;
+            width: 10rem;
+            height: 2rem
+        }
+
+        li>div>span {
+            cursor: pointer;
+        }
+
+        li>div>.btn-group {
+            display: none;
+        }
+
+        li>div:hover {
+            background-color: #eee;
+        }
+
+        li>div:hover>.btn-group {
+            display: block;
+        }
+
+        .modal-footer {
+            justify-content: space-between;
+        }
+
+        .timer {
+            color: #cc0000;
+            font-weight: bold;
+        }
+    </style>
 </head>
 
-<body>
+<body onload="readItems()">
     <main>
         <div class="container py-4">
             <header class="pb-3 mb-4 border-bottom">
@@ -154,18 +256,236 @@ if (!empty($_GET['action']) and in_array($_GET['action'], ['create', 'read', 'up
                 </a>
             </header>
 
-            <div class="p-5 mb-4 bg-body-tertiary rounded-3">
-                q
-            </div>
+            <div class="p-5 mb-0 bg-body-tertiary rounded-3" id="app"></div>
 
             <footer class="pt-3 mt-4 text-body-secondary border-top">
                 &copy; 2024
             </footer>
         </div>
+
+        <div class="modal fade" id="add" tabindex="-1" aria-hidden="true">
+            <div class="modal-dialog modal-dialog-centered">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h1 class="modal-title fs-5">Add item</h1>
+                        <button type="button" class="btn-close" onclick="closeModal()"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="mb-3">
+                            <label for="title" class="col-form-label">Title</label>
+                            <input type="text" class="form-control" name="title">
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <div class="timer"></div>
+                        <div>
+                            <button type="button" class="btn btn-secondary" onclick="closeModal()">Close</button>
+                            <button type="button" class="btn btn-primary" onclick="addSubmit()">Add item</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="modal fade" id="remove" tabindex="-1" aria-hidden="true">
+            <div class="modal-dialog modal-dialog-centered">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h1 class="modal-title fs-5">Delete confirmation</h1>
+                        <button type="button" class="btn-close" onclick="closeModal()"></button>
+                    </div>
+                    <div class="modal-body">
+                        This is very dangerous, you shouldn't do it! Are tou really really sure?
+                    </div>
+                    <div class="modal-footer">
+                        <div class="timer"></div>
+                        <div>
+                            <button type="button" class="btn btn-secondary" onclick="closeModal()">No</button>
+                            <button type="button" class="btn btn-primary" onclick="deleteRequest()">Yes I am</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
     </main>
     <script src="https://code.jquery.com/jquery-3.7.1.min.js" integrity="sha256-/JqT3SQfawRcv/BIHPThkBvs0OEvtFFmqPF/lYI/Cxo=" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>
+    <script>
+        var app = $('#app');
+        var modalAdd = $('#add');
+        var modalRemove = $('#remove');
+        var modalItemId;
+        var modalItemUpdate = false;
 
+        const START_TIME = 30;
+        var timer;
+
+        function loading() {
+            app.empty().append('<i class="fa-solid fa-spinner fa-spin"></i>');
+        }
+
+        function btnRoot(message = 'Create root') {
+            app.empty().append('<span class="btn btn-primary">' + message + '</span>');
+        }
+
+        function request(
+            method = 'read',
+            data = {}
+        ) {
+            this.loading();
+
+            fetch('./index.php?response=' + method, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(data)
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data) {
+                        app
+                            .empty()
+                            .append(
+                                this.template(
+                                    this.generateTreeFromItems(
+                                        data
+                                    )
+                                )
+                            );
+
+                        this.closeModal();
+                    } else {
+                        this.btnRoot()
+                    }
+                });
+        }
+
+        function createRequest(data) {
+            this.request('create', data)
+        }
+
+        function updateRequest(data) {
+            this.request('update', data)
+        }
+
+        function deleteRequest() {
+            this.request('delete', {
+                id: modalItemId
+            })
+        }
+
+        function readItems() {
+            this.request()
+        }
+
+        function generateTreeFromItems(params) {
+            let values = Object.values(params);
+            let map = {};
+
+            values
+                .forEach(function(row) {
+                    map[row.id] = {
+                        title: row.title,
+                        id: row.id,
+                        parent: row.parent_id,
+                        children: []
+                    };
+                });
+            values.forEach(function(row) {
+                if (map[row.parent_id]) {
+                    map[row.parent_id].children.push(map[row.id]);
+                }
+            });
+
+            Object.keys(map).forEach(k => {
+                if (map[k].parent != 0) {
+                    delete map[k];
+                }
+            })
+
+            return map;
+        }
+
+        function template(params) {
+            let li = [];
+            Object
+                .values(params)
+                .forEach(row => {
+                    li.push(
+                        '<li>' +
+                        '<div>' +
+                        '<span onclick="update(' + row.id + ', \'' + row.title + '\')">' + row.title + '</span>' +
+                        '<div class="btn-group" role="group">' +
+                        '<span class="btn btn-outline-secondary btn-sm" onclick="add(' + row.id + ')"><i class="fa-solid fa-plus"></i></span>' +
+                        '<span class="btn btn-outline-secondary btn-sm" onclick="remove(' + row.id + ')"><i class="fa-solid fa-minus"></i></span>' +
+                        '</div>' +
+                        '</div>' +
+                        (row.children ? this.template(row.children) : '') +
+                        '</li>'
+                    );
+                });
+            return '<ul>' + li.join('') + '</ul>';
+        }
+
+        function openModal(modal_id, id) {
+            var modal = new bootstrap.Modal(modal_id, {
+                keyboard: false
+            });
+            modalItemId = id;
+            modal.show();
+
+            this.startTimer();
+        }
+
+        function closeModal() {
+            $('.modal input').val('');
+            $('.modal').modal('hide')
+            clearInterval(timer);
+            modalItemId = 0;
+        }
+
+        function add(id) {
+            modalAdd.find('.btn-primary').text('Add item');
+            this.openModal(modalAdd, id);
+        }
+
+        function addSubmit() {
+            let data = {
+                title: modalAdd.find('input').val()
+            }
+            if (this.modalItemUpdate) {
+                data.id = modalItemId
+                this.updateRequest(data)
+            } else {
+                data.parent_id = modalItemId
+                this.createRequest(data)
+            }
+        }
+
+        function remove(id) {
+            this.openModal(modalRemove, id)
+        }
+
+        function update(id, title) {
+            this.modalItemUpdate = true;
+            modalAdd.find('.btn-primary').text('Edit item');
+            modalAdd.find('input').val(title);
+            this.add(id)
+        }
+
+        function startTimer() {
+            let start = START_TIME;
+            $('.timer').text(start)
+            timer = setInterval(() => {
+                start -= 1;
+                $('.timer').text(start)
+                if (start <= 0) {
+                    this.closeModal();
+                }
+            }, 1000);
+        }
+    </script>
 </body>
 
 </html>
